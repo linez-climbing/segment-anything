@@ -132,6 +132,7 @@ class SamAutomaticMaskGenerator:
         self.crop_n_points_downscale_factor = crop_n_points_downscale_factor
         self.min_mask_region_area = min_mask_region_area
         self.output_mode = output_mode
+        self.embeddings = None
 
     @torch.no_grad()
     def generate(self, image: np.ndarray) -> List[Dict[str, Any]]:
@@ -158,7 +159,8 @@ class SamAutomaticMaskGenerator:
                crop_box (list(float)): The crop of the image used to generate
                  the mask, given in XYWH format.
         """
-
+        self.embeddings = []
+        
         # Generate masks
         mask_data = self._generate_masks(image)
 
@@ -234,6 +236,7 @@ class SamAutomaticMaskGenerator:
         cropped_im = image[y0:y1, x0:x1, :]
         cropped_im_size = cropped_im.shape[:2]
         self.predictor.set_image(cropped_im)
+        self.embeddings.append(self.predictor.get_image_embedding().cpu().numpy())
 
         # Get points for this crop
         points_scale = np.array(cropped_im_size)[None, ::-1]
