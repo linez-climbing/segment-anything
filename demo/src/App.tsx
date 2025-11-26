@@ -4,7 +4,7 @@
 // This source code is licensed under the license found in the
 // LICENSE file in the root directory of this source tree.
 
-import { InferenceSession, Tensor } from "onnxruntime-web";
+import { env as ortEnv, InferenceSession, Tensor } from "onnxruntime-web";
 import React, { useContext, useEffect, useState } from "react";
 import "./assets/scss/App.scss";
 import { handleImageScale } from "./components/helpers/scaleHelper";
@@ -21,6 +21,8 @@ import npyjs from "npyjs";
 const IMAGE_PATH = "/assets/data/dogs.jpg";
 const IMAGE_EMBEDDING = "/assets/data/dogs_embedding.npy";
 const MODEL_DIR = "/model/sam_onnx_quantized_example.onnx";
+
+ortEnv.wasm.wasmPaths = "/";
 
 const App = () => {
   const {
@@ -41,8 +43,11 @@ const App = () => {
     // Initialize the ONNX model
     const initModel = async () => {
       try {
+        const sessionOptions = {
+          executionProviders: ["wasm"], // try GPU first, fall back to WASM
+        };
         if (MODEL_DIR === undefined) return;
-        const URL: string = MODEL_DIR;
+        const model = await InferenceSession.create(MODEL_DIR, sessionOptions);
         const model = await InferenceSession.create(URL);
         setModel(model);
       } catch (e) {
@@ -82,10 +87,10 @@ const App = () => {
   };
 
   // Decode a Numpy file into a tensor. 
-  const loadNpyTensor = async (tensorFile: string, dType: string) => {
+  const loadNpyTensor = async (tensorFile: string, dType: Tensor.Type) => {
     let npLoader = new npyjs();
     const npArray = await npLoader.load(tensorFile);
-    const tensor = new ort.Tensor(dType, npArray.data, npArray.shape);
+    const tensor = new Tensor(dType, npArray.data, npArray.shape);
     return tensor;
   };
 
