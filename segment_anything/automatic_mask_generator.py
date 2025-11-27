@@ -3,7 +3,7 @@
 
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
-import logging
+from logging import Logger, getLogger
 import numpy as np
 import torch
 from torchvision.ops.boxes import batched_nms, box_area  # type: ignore
@@ -49,6 +49,7 @@ class SamAutomaticMaskGenerator:
         point_grids: Optional[List[np.ndarray]] = None,
         min_mask_region_area: int = 0,
         output_mode: str = "binary_mask",
+        logger: Optional[Logger] = None,
     ) -> None:
         """
         Using a SAM model, generates masks for the entire image.
@@ -93,6 +94,7 @@ class SamAutomaticMaskGenerator:
             'uncompressed_rle', or 'coco_rle'. 'coco_rle' requires pycocotools.
             For large resolutions, 'binary_mask' may consume large amounts of
             memory.
+          logger (logging.Logger or None): Optional logger for debug output.
         """
 
         assert (points_per_side is None) != (
@@ -133,6 +135,7 @@ class SamAutomaticMaskGenerator:
         self.min_mask_region_area = min_mask_region_area
         self.output_mode = output_mode
         self.embeddings = None
+        self.logger = logger or getLogger()
 
     @torch.no_grad()
     def generate(self, image: np.ndarray) -> List[Dict[str, Any]]:
@@ -162,9 +165,9 @@ class SamAutomaticMaskGenerator:
         self.embeddings = []
         
         # Generate masks
-        logging.debug(f'[SAM-AMG] generate masks...')
+        self.logger.debug(f'[SAM-AMG] generate masks...')
         mask_data = self._generate_masks(image)
-        logging.debug(f'[SAM-AMG] generated {len(mask_data["rles"])} masks.')
+        self.logger.debug(f'[SAM-AMG] generated {len(mask_data["rles"])} masks.')
 
         # Filter small disconnected regions and holes in masks
         if self.min_mask_region_area > 0:
@@ -200,18 +203,18 @@ class SamAutomaticMaskGenerator:
 
     def _generate_masks(self, image: np.ndarray) -> MaskData:
         orig_size = image.shape[:2]
-        logging.debug(f'[SAM-AMG]   generate crop boxes...')
+        self.logger.debug(f'[SAM-AMG]   generate crop boxes...')
         crop_boxes, layer_idxs = generate_crop_boxes(
             orig_size, self.crop_n_layers, self.crop_overlap_ratio
         )
-        logging.debug(f'[SAM-AMG]   generated {len(crop_boxes)} crop boxes.')
+        self.logger.debug(f'[SAM-AMG]   generated {len(crop_boxes)} crop boxes.')
         # Iterate over image crops
-        logging.debug(f'[SAM-AMG]   process crops...')
+        self.logger.debug(f'[SAM-AMG]   process crops...')
         data = MaskData()
         for crop_box, layer_idx in zip(crop_boxes, layer_idxs):
             crop_data = self._process_crop(image, crop_box, layer_idx, orig_size)
             data.cat(crop_data)
-        logging.debug(f'[SAM-AMG]   processed crops, got {len(data["rles"])} masks.')
+        self.logger.debug(f'[SAM-AMG]   processed crops, got {len(data["rles"])} masks.')
 
         # Remove duplicate masks between crops
         if len(crop_boxes) > 1:
@@ -236,34 +239,34 @@ class SamAutomaticMaskGenerator:
         crop_layer_idx: int,
         orig_size: Tuple[int, ...],
     ) -> MaskData:
-        logging.debug(f'[SAM-AMG]     process crop layer #{crop_layer_idx} - crop box: {crop_box}...')
+        self.logger.debug(f'[SAM-AMG]     process crop layer #{crop_layer_idx} - crop box: {crop_box}...')
         # Crop the image and calculate embeddings
         x0, y0, x1, y1 = crop_box
         cropped_im = image[y0:y1, x0:x1, :]
         cropped_im_size = cropped_im.shape[:2]
-        logging.debug(f'[SAM-AMG]     set image...')
+        self.logger.debug(f'[SAM-AMG]     set image...')
         self.predictor.set_image(cropped_im)
         self.embeddings.append(self.predictor.get_image_embedding().cpu().numpy())
 
         # Get points for this crop
-        logging.debug(f'[SAM-AMG]     get points grid...')
+        self.logger.debug(f'[SAM-AMG]     get points grid...')
         points_scale = np.array(cropped_im_size)[None, ::-1]
         points_for_image = self.point_grids[crop_layer_idx] * points_scale
-        logging.debug(f'[SAM-AMG]     got {len(points_for_image)} points.')
+        self.logger.debug(f'[SAM-AMG]     got {len(points_for_image)} points.')
 
         # Generate masks for this crop in batches
         data = MaskData()
-        logging.debug(f'[SAM-AMG]     process points in batches...')
+        self.logger.debug(f'[SAM-AMG]     process points in batches...')
         for (points,) in batch_iterator(self.points_per_batch, points_for_image):
-            logging.debug(f'[SAM-AMG]       process batch of {len(points)} points...')
+            self.logger.debug(f'[SAM-AMG]       process batch of {len(points)} points...')
             batch_data = self._process_batch(points, cropped_im_size, crop_box, orig_size)
             data.cat(batch_data)
             del batch_data
-            logging.debug(f'[SAM-AMG]       accumulated {len(data["rles"])} masks so far.')
+            self.logger.debug(f'[SAM-AMG]       accumulated {len(data["rles"])} masks so far.')
         self.predictor.reset_image()
 
         # Remove duplicates within this crop.
-        logging.debug(f'[SAM-AMG]     remove duplicate masks by NMS...')
+        self.logger.debug(f'[SAM-AMG]     remove duplicate masks by NMS...')
         keep_by_nms = batched_nms(
             data["boxes"].float(),
             data["iou_preds"],
@@ -271,7 +274,7 @@ class SamAutomaticMaskGenerator:
             iou_threshold=self.box_nms_thresh,
         )
         data.filter(keep_by_nms)
-        logging.debug(f'[SAM-AMG]     kept {len(data["rles"])} masks after NMS.')
+        self.logger.debug(f'[SAM-AMG]     kept {len(data["rles"])} masks after NMS.')
 
         # Return to the original image frame
         data["boxes"] = uncrop_boxes_xyxy(data["boxes"], crop_box)
@@ -299,7 +302,7 @@ class SamAutomaticMaskGenerator:
             multimask_output=True,
             return_logits=True,
         )
-        logging.debug(f'[SAM-AMG]         predicted masks: {masks.shape} ({type(masks)}).')
+        self.logger.debug(f'[SAM-AMG]         predicted masks: {masks.shape} ({type(masks)}).')
 
         # Serialize predictions and store in MaskData
         data = MaskData(
@@ -324,9 +327,9 @@ class SamAutomaticMaskGenerator:
 
         # Threshold masks and calculate boxes
         data["masks"] = data["masks"] > self.predictor.model.mask_threshold
-        logging.debug(f'[SAM-AMG]         filtered masks: {data["masks"].shape} ({type(data["masks"])}).')
+        self.logger.debug(f'[SAM-AMG]         filtered masks: {data["masks"].shape} ({type(data["masks"])}).')
         data["boxes"] = batched_mask_to_box(data["masks"])
-        logging.debug(f'[SAM-AMG]         filtered boxes: {data["boxes"].shape} ({type(data["boxes"])}).')
+        self.logger.debug(f'[SAM-AMG]         filtered boxes: {data["boxes"].shape} ({type(data["boxes"])}).')
 
         # Filter boxes that touch crop boundaries
         keep_mask = ~is_box_near_crop_edge(data["boxes"], crop_box, [0, 0, orig_w, orig_h])
@@ -335,9 +338,9 @@ class SamAutomaticMaskGenerator:
 
         # Compress to RLE
         data["masks"] = uncrop_masks(data["masks"], crop_box, orig_h, orig_w)
-        logging.debug(f'[SAM-AMG]         uncropped masks: {data["masks"].shape} ({type(data["masks"])}).')
+        self.logger.debug(f'[SAM-AMG]         uncropped masks: {data["masks"].shape} ({type(data["masks"])}).')
         data["rles"] = mask_to_rle_pytorch(data["masks"])
-        logging.debug(f'[SAM-AMG]         uncropped RLEs: {len(data["rles"])} ({type(data["rles"])}).')
+        self.logger.debug(f'[SAM-AMG]         uncropped RLEs: {len(data["rles"])} ({type(data["rles"])}).')
         del data["masks"]
 
         return data
