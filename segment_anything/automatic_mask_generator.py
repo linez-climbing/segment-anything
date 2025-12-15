@@ -31,7 +31,7 @@ from .utils.amg import (
     uncrop_points,
 )
 
-def do_nothing(*__args__, **__kwargs__):
+def do_nothing(**__kwargs__):
     pass
 
 class SamAutomaticMaskGenerator:
