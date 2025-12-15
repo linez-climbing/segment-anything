@@ -266,7 +266,7 @@ class SamAutomaticMaskGenerator:
         # Generate masks for this crop in batches
         data = MaskData()
         self.logger.debug(f'[SAM-AMG]     process points in batches...')
-        total_points = len(points_for_image[0])
+        total_points = len(points_for_image)
         done_points = 0
         for (points,) in batch_iterator(self.points_per_batch, points_for_image):
             self.logger.debug(f'[SAM-AMG]       process batch of {len(points)} points...')
