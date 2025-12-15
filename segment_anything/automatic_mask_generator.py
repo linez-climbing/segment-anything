@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from torchvision.ops.boxes import batched_nms, box_area  # type: ignore
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .modeling import Sam
 from .predictor import SamPredictor
@@ -31,6 +31,8 @@ from .utils.amg import (
     uncrop_points,
 )
 
+def do_nothing(*__args__, **__kwargs__):
+    pass
 
 class SamAutomaticMaskGenerator:
     def __init__(
@@ -50,6 +52,7 @@ class SamAutomaticMaskGenerator:
         min_mask_region_area: int = 0,
         output_mode: str = "binary_mask",
         logger: Optional[Logger] = None,
+        callback: Callable[[], None] = None
     ) -> None:
         """
         Using a SAM model, generates masks for the entire image.
@@ -136,6 +139,7 @@ class SamAutomaticMaskGenerator:
         self.output_mode = output_mode
         self.embeddings = None
         self.logger = logger or getLogger()
+        self.callback = callback or do_nothing
 
     @torch.no_grad()
     def generate(self, image: np.ndarray) -> List[Dict[str, Any]]:
@@ -247,6 +251,11 @@ class SamAutomaticMaskGenerator:
         self.logger.debug(f'[SAM-AMG]     set image...')
         self.predictor.set_image(cropped_im)
         self.embeddings.append(self.predictor.get_image_embedding().cpu().numpy())
+        self.callback(
+            state = 'EMBEDDED',
+            layer = crop_layer_idx,
+            crop = crop_box,
+        )
 
         # Get points for this crop
         self.logger.debug(f'[SAM-AMG]     get points grid...')
@@ -257,12 +266,22 @@ class SamAutomaticMaskGenerator:
         # Generate masks for this crop in batches
         data = MaskData()
         self.logger.debug(f'[SAM-AMG]     process points in batches...')
+        total_points = len(points_for_image[0])
+        done_points = 0
         for (points,) in batch_iterator(self.points_per_batch, points_for_image):
             self.logger.debug(f'[SAM-AMG]       process batch of {len(points)} points...')
             batch_data = self._process_batch(points, cropped_im_size, crop_box, orig_size)
             data.cat(batch_data)
             del batch_data
             self.logger.debug(f'[SAM-AMG]       accumulated {len(data["rles"])} masks so far.')
+            done_points += len(points)
+            self.callback(
+                state = 'GENERATED_BATCH',
+                layer = crop_layer_idx,
+                crop = crop_box,
+                done = done_points,
+                total = total_points,
+            )
         self.predictor.reset_image()
 
         # Remove duplicates within this crop.
